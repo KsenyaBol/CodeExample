@@ -1,0 +1,260 @@
+package com.omegar.scoreinpocket.ui.screens.tournaments
+
+import androidx.compose.ui.text.intl.Locale
+import com.omegar.scoreinpocket.base.BaseViewModel
+import com.omegar.scoreinpocket.entities.Country
+import com.omegar.scoreinpocket.entities.Error
+import com.omegar.scoreinpocket.entities.Filter
+import com.omegar.scoreinpocket.entities.Match
+import com.omegar.scoreinpocket.entities.RefereeState
+import com.omegar.scoreinpocket.entities.Tournament
+import com.omegar.scoreinpocket.entities.TournamentState
+import com.omegar.scoreinpocket.entities.geo_location.Location
+import com.omegar.scoreinpocket.repositories.DataRepository
+import com.omegar.scoreinpocket.sources.local.UserManager
+import com.omegar.scoreinpocket.sources.remote.CountryCodeProvider
+import com.omegar.scoreinpocket.sources.remote.MatchClient
+import com.omegar.scoreinpocket.ui.screens.Screen
+import com.omegar.scoreinpocket.utils.localizedMessage
+import dev.icerock.moko.geo.LocationTracker
+import dev.icerock.moko.resources.StringResource
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+import moe.tlaster.precompose.navigation.Navigator
+
+data class TournamentsState(
+    var tournamentList: List<Tournament> = ArrayList(),
+    val shouldShowLoader: Boolean = false,
+    val errorMessage: Pair<Boolean, StringResource?> = Pair(false, null),
+    val showNothingFindInfo: Boolean = false,
+    val title: String = "",
+    val isRefreshing: Boolean = false
+)
+
+class TournamentsViewModel(
+    navigator: Navigator,
+    private val dataRepository: DataRepository,
+    private val countryCodeProvider: CountryCodeProvider,
+    private val matchClient: MatchClient,
+    userManager: UserManager,
+    private val locationTracker: LocationTracker,
+    private var isJudgeMode: Boolean = false,
+    private var isCreationMode: Boolean = false
+) : BaseViewModel<TournamentsState>(navigator, userManager), MatchClient.Callback {
+
+    companion object {
+
+        val EMPTY_CITY_COMPARATOR = object : Comparator<Tournament> {
+            override fun compare(a: Tournament, b: Tournament): Int {
+                if (a.cityName.isNullOrEmpty() && b.cityName?.isNotEmpty() == true) {
+                    return 1
+                } else if (a.cityName?.isNotEmpty() == true && b.cityName.isNullOrEmpty()) {
+                    return -1
+                }
+                return 0
+            }
+        }
+    }
+
+    private val _stateFlow = MutableStateFlow(TournamentsState())
+    val stateFlow = _stateFlow.asStateFlow()
+
+    private var filter = Filter()
+    private val language = Locale.current.language
+
+    private var currentLocation: Location? = null
+
+    init {
+        matchClient.addCallback(this)
+        launch {
+            _stateFlow.emit(_stateFlow.value.copy(shouldShowLoader = true))
+            requestFilter()
+        }
+        launch {
+            locationTracker.startTracking()
+        }
+        launch {
+            locationTracker.getLocationsFlow()
+                .distinctUntilChanged()
+                .collect {
+                    currentLocation = Location(it.latitude, it.longitude)
+                    locationTracker.stopTracking()
+                }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        matchClient.removeCallback(this)
+    }
+
+    fun refresh() {
+        launch {
+            _stateFlow.emit(_stateFlow.value.copy(isRefreshing = true))
+            requestFilter()
+        }
+    }
+
+    fun onTournamentClicked(tournament: Tournament) {
+        navigator.navigate(
+            Screen.MatchesScreen.route.replace(
+                "{tournament}",
+                Json.encodeToString(Tournament.serializer(), tournament)
+            )
+        )
+    }
+
+    fun showFilterScreen() {
+        navigator.navigate(
+            Screen.FilterScreen.route.replace(
+                "{filter}",
+                Json.encodeToString(Filter.serializer(), filter)
+            ).replace(
+                "{isJudgeMode}",
+                Json.encodeToString(Boolean.serializer(), isJudgeMode)
+            ).replace(
+                "{location}",
+                if (currentLocation == null) "null" else
+                    Json.encodeToString(Location.serializer(), currentLocation!!)
+            )
+        )
+    }
+
+    private suspend fun requestFilter() {
+        try {
+            dataRepository.currentFilter.collect { filter ->
+                if (filter.isNullFilter) {
+                    requestCountries()
+                } else {
+                    this.filter = filter
+                    requestTournaments(filter)
+                }
+            }
+        } catch (e: Error) {
+            _stateFlow.emit(
+                _stateFlow.value.copy(
+                    errorMessage = Pair(true, e.localizedMessage()),
+                    shouldShowLoader = false,
+                    showNothingFindInfo = true,
+                    isRefreshing = false
+                )
+            )
+        }
+    }
+
+    private suspend fun requestCountries() {
+        try {
+            createFilter(dataRepository.getCountries(language))
+        } catch (e: Error) {
+            _stateFlow.emit(
+                _stateFlow.value.copy(
+                    errorMessage = Pair(true, e.localizedMessage()),
+                    shouldShowLoader = false,
+                    showNothingFindInfo = true,
+                    isRefreshing = false
+                )
+            )
+        }
+    }
+
+    private suspend fun createFilter(countries: List<Country>) {
+        countryCodeProvider.requestCountryCode(object : CountryCodeProvider.Callback {
+            override suspend fun onReceiveCountryCode(success: Boolean, countryCode: String?) {
+                if (countries.isNotEmpty()) {
+                    for (country in countries) {
+                        val placeId = country.placeId
+                        if (placeId.equals(countryCode, ignoreCase = true)) {
+                            filter.country = country
+                            dataRepository.createOrUpdateFilter(filter)
+                            _stateFlow.emit(
+                                _stateFlow.value.copy(
+                                    showNothingFindInfo = false
+                                )
+                            )
+                            requestTournaments(filter)
+                            return
+                        }
+                        _stateFlow.emit(
+                            _stateFlow.value.copy(
+                                shouldShowLoader = false,
+                                showNothingFindInfo = true,
+                                isRefreshing = false
+                            )
+                        )
+                    }
+                } else {
+                    _stateFlow.emit(
+                        _stateFlow.value.copy(
+                            shouldShowLoader = false,
+                            showNothingFindInfo = true,
+                            isRefreshing = false
+                        )
+                    )
+                }
+            }
+        })
+    }
+
+    private suspend fun requestTournaments(filter: Filter) {
+        try {
+            val tournamentList = dataRepository.getTournaments(filter, language).sortedWith(
+                EMPTY_CITY_COMPARATOR
+            ).toMutableList()
+            if (tournamentList.isEmpty()) {
+                _stateFlow.emit(
+                    _stateFlow.value.copy(
+                        shouldShowLoader = false,
+                        showNothingFindInfo = true,
+                        isRefreshing = false
+                    )
+                )
+            } else {
+                _stateFlow.emit(
+                    _stateFlow.value.copy(
+                        shouldShowLoader = false,
+                        isRefreshing = false,
+                        showNothingFindInfo = false,
+                        tournamentList = tournamentList,
+                        title = tournamentList[0].countryName ?: ""
+                    )
+                )
+            }
+        } catch (e: Error) {
+            _stateFlow.emit(
+                _stateFlow.value.copy(
+                    errorMessage = Pair(true, e.localizedMessage()),
+                    shouldShowLoader = false,
+                    showNothingFindInfo = true,
+                    isRefreshing = false
+                )
+            )
+        }
+    }
+
+    override fun onTournamentUpdated(tournamentState: TournamentState) {
+        if (stateFlow.value.tournamentList.isEmpty()) return
+        var wasFoundNewTournament = false
+        for (i in _stateFlow.value.tournamentList.indices) {
+            val tournament = _stateFlow.value.tournamentList[i]
+            if (tournament.id.equals(tournamentState.tournamentId, ignoreCase = true)) {
+                val tournamentList = _stateFlow.value.tournamentList.toMutableList()
+                tournamentList[i] = tournament.copy(
+                    playMatchesAmount = tournamentState.onlineCount,
+                    totalMatchesAmount = tournamentState.totalCount
+                )
+                _stateFlow.value = _stateFlow.value.copy(tournamentList = tournamentList)
+                wasFoundNewTournament = true
+                break
+            }
+        }
+        if (!wasFoundNewTournament) refresh()
+    }
+
+    override fun onMatchUpdated(match: Match) { /*nothing*/ }
+
+    override fun onCheckReferee(refereeState: RefereeState) { /*nothing*/ }
+}
