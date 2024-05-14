@@ -1,0 +1,229 @@
+package com.omegar.scoreinpocket.ui_mvp.activity.tournaments
+
+import android.content.Context
+import android.content.DialogInterface
+import android.content.Intent
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.WindowManager
+import android.widget.EditText
+import android.widget.TextView
+import androidx.annotation.StyleRes
+import androidx.appcompat.app.AlertDialog
+import androidx.core.content.ContextCompat
+import androidx.percentlayout.widget.PercentRelativeLayout
+import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout.OnRefreshListener
+import butterknife.BindView
+import ca.barrenechea.widget.recyclerview.decoration.StickyHeaderDecoration
+import com.omegar.scoreinpocket.R
+import com.omegar.scoreinpocket.delegates.GoogleLocationDelegateImpl
+import com.omegar.scoreinpocket.delegates.LocationDelegate
+import com.omegar.scoreinpocket.model.Tournament
+import com.omegar.scoreinpocket.model.geo_location.Location
+import com.omegar.scoreinpocket.ui_mvp.activity.base_activity.BaseDynamicThemeActivity
+import com.omegar.scoreinpocket.ui_mvp.activity.filter.FilterActivity
+import com.omegar.scoreinpocket.ui_mvp.activity.matches.MatchesActivity
+import com.omegar.scoreinpocket.ui_mvp.adapters.TournamentsAdapter
+import moxy.presenter.InjectPresenter
+import moxy.presenter.ProvidePresenter
+
+class TournamentsActivity : BaseDynamicThemeActivity(null), TournamentsView, TournamentsAdapter.OnClickListener,
+    OnRefreshListener, LocationDelegate.OnLocationChangedListener
+{
+
+    companion object {
+    private const val EXTRA_JUDGE = "judge"
+    private const val EXTRA_CREATION = "creation"
+
+    fun createIntent(context: Context): Intent {
+        return Intent(context, TournamentsActivity::class.java)
+    }
+
+    fun createIntent(context: Context, isJudgeMode: Boolean, isCreationMode: Boolean, @StyleRes styleId: Int): Intent {
+        val intent = createIntent(context, isJudgeMode, isCreationMode)
+        changeTheme(intent, styleId)
+        return intent
+    }
+
+    fun createIntent(context: Context, isJudgeMode: Boolean, isCreationMode: Boolean): Intent {
+        val intent = createIntent(context)
+        intent.putExtra(EXTRA_JUDGE, isJudgeMode)
+        intent.putExtra(EXTRA_CREATION, isCreationMode)
+        return intent
+    }
+
+    fun createIntentWithClearSingleTopFlag(context: Context): Intent {
+        return createIntent(context).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    }
+}
+
+    @BindView(R.id.recyclerview)
+    lateinit var mRecyclerView: RecyclerView
+
+    @BindView(R.id.layout_refresh)
+    lateinit var mSwipeRefreshLayout: SwipeRefreshLayout
+
+    @BindView(R.id.layout_empty_info_container)
+    lateinit var mNothingFindContainer: PercentRelativeLayout
+
+    @InjectPresenter
+    lateinit var mTournamentsPresenter: TournamentsPresenter
+
+    private var mAdapter: TournamentsAdapter? = null
+    private var mLocationDelegate: LocationDelegate? = null
+    private var mStickyHeaderDecoration: StickyHeaderDecoration? = null
+    private var mPasswordDialog: AlertDialog? = null
+
+    @ProvidePresenter
+    fun provideTournamentsPresenter(): TournamentsPresenter {
+        return TournamentsPresenter(
+            intent.getBooleanExtra(EXTRA_JUDGE, false),
+            intent.getBooleanExtra(EXTRA_CREATION, false)
+        )
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_tournaments)
+        mSwipeRefreshLayout!!.setOnRefreshListener(this)
+        mAdapter = TournamentsAdapter()
+        mAdapter!!.setClickListener(this)
+        mRecyclerView!!.adapter = mAdapter
+        mStickyHeaderDecoration = StickyHeaderDecoration(mAdapter)
+        mRecyclerView!!.addItemDecoration(mStickyHeaderDecoration!!)
+        mLocationDelegate = GoogleLocationDelegateImpl(context)
+        mLocationDelegate!!.lastKnownLocation
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mLocationDelegate!!.startListenLocation(this, this)
+    }
+
+    override fun onPause() {
+        mLocationDelegate!!.stopListenLocation()
+        super.onPause()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.tournaments_menu, menu)
+        return super.onCreateOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.action_filter -> mTournamentsPresenter.onFilterClicked()
+            else -> return super.onOptionsItemSelected(item)
+        }
+        return true
+    }
+
+    override fun needShowBackButton(): Boolean {
+        return true
+    }
+
+    override fun setTournamentList(list: List<Tournament>) {
+        mStickyHeaderDecoration!!.clearHeaderCache()
+        mAdapter!!.setList(list)
+    }
+
+    override fun updateTournament(tournament: Tournament, position: Int) {
+        runOnUiThread(Runnable { mAdapter!!.updateTournament(tournament, position) })
+    }
+
+    override fun showFilterActivity(location: Location?, isJudgeMode: Boolean) {
+        startActivity(FilterActivity.createIntent(context, location, isJudgeMode))
+    }
+
+    override fun showMatchesActivity(tournament: Tournament, isJudgeMode: Boolean, isCreationMode: Boolean) {
+        startActivity(MatchesActivity.createIntent(context, tournament, isJudgeMode, isCreationMode))
+    }
+
+    override fun requestLastKnownLocation() {
+        val location = mLocationDelegate!!.lastKnownLocation
+        if (location != null) {
+            onLocationChanged(location.latitude, location.longitude)
+        }
+    }
+
+    override fun showPasswordDialog(tournamentName: String, passwordLength: Int) {
+        val enabledButtonColor = ContextCompat.getColor(context, R.color.teal)
+        val disabledButtonColor = ContextCompat.getColor(context, R.color.black_38)
+        val builder = AlertDialog.Builder(context)
+        val view = LayoutInflater.from(context).inflate(R.layout.dialog_tournament_password, null)
+        val passwordEditText = view.findViewById<View>(R.id.edittext_password) as EditText
+        val titleTextView = view.findViewById<View>(R.id.textview_title) as TextView
+        titleTextView.text = tournamentName
+        builder.setView(view)
+        builder.setPositiveButton(R.string.ok) { _, _ ->
+            mTournamentsPresenter!!.onPasswordConfirmClicked(
+                passwordEditText.text.toString()
+            )
+        }
+        builder.setNegativeButton(R.string.cancel) { _, _ -> mTournamentsPresenter!!.onPasswordDialogCancel() }
+
+        mPasswordDialog = builder.create()
+        mPasswordDialog?.window!!.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        mPasswordDialog?.show()
+        val positiveButton = mPasswordDialog?.getButton(DialogInterface.BUTTON_POSITIVE)
+        passwordEditText.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(text: CharSequence, start: Int, before: Int, count: Int) {
+                positiveButton?.isEnabled = text.length == passwordLength
+                positiveButton?.setTextColor(if (text.length == passwordLength) enabledButtonColor else disabledButtonColor)
+            }
+
+            override fun afterTextChanged(s: Editable) {}
+        })
+        mPasswordDialog?.setOnCancelListener(DialogInterface.OnCancelListener { _: DialogInterface -> mTournamentsPresenter!!.onPasswordDialogCancel() })
+        passwordEditText.setText("")
+    }
+
+    override fun hidePasswordDialog() {
+        if (mPasswordDialog != null && mPasswordDialog!!.isShowing) {
+            mPasswordDialog!!.hide()
+        }
+    }
+
+    override fun setNothingFindInfoState(visible: Boolean) {
+        mRecyclerView.visibility = if (visible) View.GONE else View.VISIBLE
+        mNothingFindContainer.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    override fun setSwipeRefreshingState(refresh: Boolean) {
+        mSwipeRefreshLayout.isRefreshing = refresh
+    }
+
+    override fun onTournamentClick(tournament: Tournament) {
+        mTournamentsPresenter.onTournamentClicked(tournament)
+    }
+
+    override fun onRefresh() {
+        mTournamentsPresenter.onRefresh()
+    }
+
+    override fun onLocationChanged(latitude: Double, longitude: Double) {
+        mTournamentsPresenter.onLocationChanged(latitude, longitude)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        mLocationDelegate!!.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    override fun onDestroy() {
+        if (mPasswordDialog != null && mPasswordDialog!!.isShowing) {
+            mPasswordDialog!!.setOnCancelListener(null)
+            mPasswordDialog!!.dismiss()
+        }
+        super.onDestroy()
+    }
+
+}
