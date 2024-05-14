@@ -1,0 +1,25 @@
+package com.omegar.scoreinpocket.ui_mvp.activity.tournaments
+
+import com.omegar.scoreinpocket.model.Tournament
+import com.omegar.scoreinpocket.model.geo_location.Location
+import com.omegar.scoreinpocket.ui_mvp.activity.base_activity.BaseView
+import moxy.viewstate.strategy.AddToEndSingleStrategy
+import moxy.viewstate.strategy.SkipStrategy
+import moxy.viewstate.strategy.StateStrategyType
+
+@StateStrategyType(AddToEndSingleStrategy::class)
+interface TournamentsView : BaseView {
+    fun setTournamentList(list: List<Tournament>)
+    fun updateTournament(tournament: Tournament, position: Int)
+    fun setNothingFindInfoState(visible: Boolean)
+    fun setSwipeRefreshingState(refresh: Boolean)
+
+    @StateStrategyType(SkipStrategy::class)
+    fun showFilterActivity(location: Location?, isJudgeMode: Boolean)
+
+    @StateStrategyType(SkipStrategy::class)
+    fun showMatchesActivity(tournament: Tournament, isJudgeMode: Boolean, isCreationMode: Boolean)
+    fun requestLastKnownLocation()
+    fun showPasswordDialog(tournamentName: String, passwordLength: Int)
+    fun hidePasswordDialog()
+}
