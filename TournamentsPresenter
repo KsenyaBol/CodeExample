@@ -1,0 +1,266 @@
+package com.omegar.scoreinpocket.ui_mvp.activity.tournaments
+
+import com.omegar.scoreinpocket.BuildConfig
+import com.omegar.scoreinpocket.R
+import com.omegar.scoreinpocket.analytics.AnalyticsTracker
+import com.omegar.scoreinpocket.analytics.track
+import com.omegar.scoreinpocket.app.ScoreBoardApplication
+import com.omegar.scoreinpocket.data.DisposingObserver
+import com.omegar.scoreinpocket.data.preferences.Preferences
+import com.omegar.scoreinpocket.delegates.MatchClient
+import com.omegar.scoreinpocket.model.Country
+import com.omegar.scoreinpocket.model.Filter
+import com.omegar.scoreinpocket.model.Match
+import com.omegar.scoreinpocket.model.PasswordMatch
+import com.omegar.scoreinpocket.model.PasswordVerify
+import com.omegar.scoreinpocket.model.RefereeState
+import com.omegar.scoreinpocket.model.Tournament
+import com.omegar.scoreinpocket.model.TournamentState
+import com.omegar.scoreinpocket.model.geo_location.Location
+import com.omegar.scoreinpocket.providers.country_code.CountryCodeProvider
+import com.omegar.scoreinpocket.ui_mvp.activity.base_activity.BasePresenter
+import com.omegar.scoreinpocket.ui_mvp.adapters.EmptyCityComparator
+import com.omegar.scoreinpocket.utils.LocationUtils
+import com.omegar.scoreinpocket.utils.ObjectUtils
+import moxy.InjectViewState
+import java.util.Collections
+import java.util.Locale
+import javax.inject.Inject
+import com.omegar.scoreinpocket.model.Error
+
+@InjectViewState
+class TournamentsPresenter(isJudgeMode: Boolean, isCreationMode: Boolean) : BasePresenter<TournamentsView>(), MatchClient.Callback {
+
+    @Inject
+    lateinit var preferences: Preferences
+
+    @Inject
+    lateinit var matchClient: MatchClient
+
+    private var filter: Filter? = null
+    private var currentLocation: Location? = null
+    private var tournamentList: List<Tournament>? = null
+
+    @Inject
+    lateinit var countryCodeProvider: CountryCodeProvider
+
+    private val isJudgeMode: Boolean
+    private val isCreationMode: Boolean
+    private var filterSearched = false
+    private var lastClickedTournament: Tournament? = null
+
+    init {
+        ScoreBoardApplication.appComponent.inject(this)
+        this.isJudgeMode = isJudgeMode
+        this.isCreationMode = isCreationMode
+    }
+
+    override fun onFirstViewAttach() {
+        super.onFirstViewAttach()
+        viewState.requestLastKnownLocation()
+        viewState.setToolbarTitle(R.string.choose_tournament)
+        requestFilter()
+    }
+
+    private fun requestFilter() {
+        filterSearched = true
+        viewState.setSwipeRefreshingState(true)
+        dataRepository.filterObservable.subscribe(object : DisposingObserver<Filter>(compositeDisposable) {
+            override fun onNext(filter: Filter) {
+                if (filter.isNullFilter) {
+                    requestCountries()
+                } else {
+                    this@TournamentsPresenter.filter = filter
+                    requestTournaments(filter)
+                }
+                filterSearched = false
+            }
+
+            override fun onError(error: Error) {
+                showErrorMessage(error)
+                filterSearched = false
+                viewState.setSwipeRefreshingState(false)
+                viewState.setNothingFindInfoState(true)
+            }
+        })
+    }
+
+    private fun requestCountries() {
+        val language = Locale.getDefault().language
+        dataRepository.getCountriesObservable(language)
+            .subscribe(object : DisposingObserver<List<Country>>(compositeDisposable) {
+                override fun onNext(value: List<Country>) {
+                    createFilter(value)
+                }
+
+                override fun onError(error: Error) {
+                    showErrorMessage(error)
+                    viewState.setSwipeRefreshingState(false)
+                    viewState.setNothingFindInfoState(true)
+                }
+            })
+    }
+
+    private fun createFilter(countries: List<Country?>) {
+        countryCodeProvider.requestCountryCode(object : CountryCodeProvider.Callback {
+            override fun onReceiveCountryCode(success: Boolean, countryCode: String?) {
+                if (!ObjectUtils.isEmpty(countries)) {
+                    for (country in countries) {
+                        val placeId = country!!.placeId
+                        if (placeId != null && placeId.equals(countryCode, ignoreCase = true)) {
+                            filter = Filter()
+                            filter!!.country = country
+                            viewState.setNothingFindInfoState(false)
+
+                            dataRepository.createOrUpdateFilter(filter!!).subscribe(
+                                DisposingObserver.DefaultDisposingObserver(
+                                    compositeDisposable
+                                )
+                            )
+                            return
+                        }
+                        viewState.setSwipeRefreshingState(false)
+                        viewState.setNothingFindInfoState(true)
+                    }
+                } else {
+                    viewState.setSwipeRefreshingState(false)
+                    viewState.setNothingFindInfoState(true)
+                }
+            }
+        })
+    }
+
+    private fun requestTournaments(filter: Filter) {
+        dataRepository.getTournamentsObservable(filter, Locale.getDefault().language)
+            .subscribe(object : DisposingObserver<List<Tournament>>(compositeDisposable) {
+                override fun onNext(value: List<Tournament>) {
+                    if (value.isNotEmpty()) {
+                        Collections.sort(value, sEmptyCityComparator)
+                        tournamentList = ArrayList(value)
+                        if (currentLocation != null) updateDistance()
+                        viewState.setNothingFindInfoState(false)
+                        viewState.setTournamentList(tournamentList as List<Tournament>)
+                        if (!isJudgeMode) {
+                            viewState.setToolbarTitle((tournamentList as ArrayList<Tournament>)[0].countryName!!)
+                        }
+                    } else {
+                        viewState.setNothingFindInfoState(true)
+                    }
+                    viewState.setSwipeRefreshingState(false)
+                }
+
+                override fun onError(error: Error) {
+                    showErrorMessage(error)
+                    viewState.setSwipeRefreshingState(false)
+                    viewState.setNothingFindInfoState(true)
+                }
+            })
+    }
+
+    fun onLocationChanged(latitude: Double, longitude: Double) {
+        currentLocation = Location(latitude, longitude)
+        if (tournamentList == null || tournamentList!!.isEmpty()) return
+        updateDistance()
+        viewState.setTournamentList(tournamentList!!)
+    }
+
+    private fun updateDistance() {
+        for (tournament in tournamentList!!) {
+            tournament.distance = LocationUtils.getDistanceInMeters(currentLocation!!, tournament.location!!)
+        }
+    }
+
+    fun onRefresh() {
+        if (filterSearched) return
+        filter?.let { filter ->
+            requestTournaments(filter)
+        } ?: requestCountries()
+    }
+
+    fun onFilterClicked() {
+        viewState.showFilterActivity(currentLocation, isJudgeMode)
+    }
+
+    fun onTournamentClicked(tournament: Tournament) {
+        lastClickedTournament = tournament
+        if (isJudgeMode) {
+            if (preferences.isUserTournamentCreator(tournament.id!!)) {
+                tournament.password = preferences.getTournamentPassword(tournament.id!!)
+                viewState.showMatchesActivity(lastClickedTournament!!, isJudgeMode, isCreationMode)
+                track(AnalyticsTracker.Event.WatchMatch(tournament.name.orEmpty()))
+            } else {
+                viewState.showPasswordDialog(tournament.name!!, BuildConfig.NUMBER_OF_DIGITS_IN_PASSWORD)
+            }
+        } else {
+            viewState.showMatchesActivity(tournament, isJudgeMode, isCreationMode)
+        }
+    }
+
+    override fun onCheckReferee(refereeState: RefereeState) {}
+
+    fun onPasswordConfirmClicked(password: String) {
+        viewState.hidePasswordDialog()
+        checkPassword(lastClickedTournament!!.id!!, password)
+    }
+
+    private fun checkPassword(tournamentId: String, password: String) {
+        viewState.showProgressDialog()
+        val passwordVerify = PasswordVerify(tournamentId, password)
+        dataRepository.checkPassword(passwordVerify)
+            .subscribe(object : DisposingObserver<PasswordMatch>(compositeDisposable) {
+                override fun onNext(value: PasswordMatch) {
+                    viewState.hideProgressDialog()
+                    if (value.isMatch) {
+                        lastClickedTournament!!.password = password
+                        viewState.showMatchesActivity(lastClickedTournament!!, isJudgeMode, isCreationMode)
+                        track(AnalyticsTracker.Event.JoinMatch)
+                    } else {
+                        viewState.showMessage(R.string.error_password_missmatch) { dialog -> viewState!!.hideMessage() }
+                    }
+                }
+
+                override fun onError(error: Error) {
+                    showErrorMessage(error)
+                    viewState.hideProgressDialog()
+                }
+            })
+    }
+
+    fun onPasswordDialogCancel() {
+        viewState.hidePasswordDialog()
+    }
+
+    override fun onMatchUpdated(match: Match) {
+        onRefresh()
+    }
+
+    override fun onTournamentUpdated(tournamentState: TournamentState) {
+        if (tournamentList == null || tournamentList!!.isEmpty()) return
+        var wasFoundNewTournament = false
+        for (i in tournamentList!!.indices) {
+            val tournament = tournamentList!![i]
+            if (tournament.id.equals(tournamentState.tournamentId, ignoreCase = true)) {
+                tournament.playMatchesAmount = tournamentState.onlineCount
+                tournament.totalMatchesAmount = tournamentState.totalCount
+                viewState.updateTournament(tournament, i)
+                wasFoundNewTournament = true
+                break
+            }
+        }
+        if (!wasFoundNewTournament) onRefresh() //if a new tournament is created
+    }
+
+    override fun attachView(view: TournamentsView?) {
+        super.attachView(view)
+        matchClient.addCallback(this)
+    }
+
+    override fun detachView(view: TournamentsView?) {
+        super.detachView(view)
+        matchClient.removeCallback(this)
+    }
+
+    companion object {
+        private val sEmptyCityComparator = EmptyCityComparator()
+    }
+}
