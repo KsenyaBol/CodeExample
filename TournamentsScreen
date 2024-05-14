@@ -1,0 +1,284 @@
+package com.omegar.scoreinpocket.ui.screens.tournaments
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.Divider
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.Icon
+import androidx.compose.material.Text
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.omegar.scoreinpocket.di.AppComponent
+import com.omegar.scoreinpocket.ui.theme.PocketScoreboardTheme
+import com.omegar.scoreinpocket.ui.widgets.AppBar
+import com.omegar.scoreinpocket.ui.widgets.PSLoader
+import dev.icerock.moko.resources.compose.painterResource
+import dev.icerock.moko.resources.compose.stringResource
+import kotlinx.coroutines.launch
+import moe.tlaster.precompose.flow.collectAsStateWithLifecycle
+import moe.tlaster.precompose.navigation.Navigator
+import moe.tlaster.precompose.viewmodel.viewModel
+import org.example.library.MR
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterialApi::class)
+@Composable
+fun TournamentsScreen(navigator: Navigator, appComponent: AppComponent, drawerState: DrawerState) {
+
+    val viewModel = viewModel(TournamentsViewModel::class) {
+        TournamentsViewModel(
+            navigator,
+            appComponent.dataRepository,
+            appComponent.countryCodeProvider,
+            appComponent.matchClient,
+            appComponent.userManager,
+            appComponent.locationTracker
+        )
+    }
+    val state = viewModel.stateFlow.collectAsStateWithLifecycle().value
+    val scope = rememberCoroutineScope()
+    val pullRefreshState = rememberPullRefreshState(state.isRefreshing, { viewModel.refresh() })
+    val listState = rememberLazyListState()
+
+    Scaffold(
+        topBar = {
+            AppBar(
+                title = state.title,
+                onNavigationIconClick = {
+                    scope.launch {
+                        drawerState.open()
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.showFilterScreen() }) {
+                        Image(
+                            painter = painterResource(MR.images.ic_filter),
+                            contentDescription = null
+                        )
+                    }
+                }
+            )
+        },
+        modifier = Modifier,
+        floatingActionButton = {
+            AnimatedVisibility(
+                modifier = Modifier.size(80.dp),
+                visible = listState.isScrollingUp(),
+                enter = slideInVertically(initialOffsetY = { it * 2 }),
+                exit = slideOutVertically(targetOffsetY = { it * 2 }),
+            ) {
+                FloatingActionButton(
+                    onClick = { /*TODO: need to add tournament creation*/ },
+                    shape = CircleShape,
+                    containerColor = PocketScoreboardTheme.colors.backgroundColor,
+                ) {
+                    Icon(
+                        modifier = Modifier.size(36.dp),
+                        painter = painterResource(MR.images.ic_plus),
+                        contentDescription = null
+                    )
+                }
+            }
+        },
+    ) { paddings ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddings)
+                .pullRefresh(pullRefreshState)
+        ) {
+
+            LazyColumn(
+                state = listState
+            ) {
+                val mainGroup = state.tournamentList.groupBy { it.cityName }
+                mainGroup.forEach { (type, groupedData) ->
+                    stickyHeader {
+                        Surface(Modifier.fillParentMaxWidth()) {
+                            Text(
+                                text = type ?: "",
+                                style = PocketScoreboardTheme.typography.defaultTextStyle,
+                                color = PocketScoreboardTheme.colors.titleTextColor,
+                                textAlign = TextAlign.Center,
+                                fontSize = 12.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp)
+                            )
+                        }
+                    }
+
+                    itemsIndexed(groupedData) { index, item ->
+                        Divider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = PocketScoreboardTheme.colors.dividerColor,
+                            thickness = 1.dp
+                        )
+                        Row(modifier = Modifier
+                            .clickable { viewModel.onTournamentClicked(item) }
+                            .padding(vertical = 18.dp, horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(0.75f),
+                            ) {
+                                Text(
+                                    text = item.name ?: "",
+                                    style = PocketScoreboardTheme.typography.defaultTextStyle,
+                                    color = PocketScoreboardTheme.colors.grey2,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "${item.street} ${item.streetNumber}",
+                                    style = PocketScoreboardTheme.typography.defaultTextStyle,
+                                    color = PocketScoreboardTheme.colors.lightGrey7,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .weight(0.25f),
+                                horizontalAlignment = Alignment.End
+                            ) {
+                                if (item.playMatchesAmount > 0) { //TODO <- need to add correct condition
+                                    Image(
+                                        painter = painterResource(MR.images.ic_game_on),
+                                        contentDescription = null
+                                    )
+                                } else {
+                                    Image(
+                                        painter = painterResource(MR.images.ic_game_off),
+                                        contentDescription = null
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Row {
+                                    if (item.playMatchesAmount > 0) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .background(
+                                                    PocketScoreboardTheme.colors.backgroundColor,
+                                                    shape = RoundedCornerShape(4.dp)
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                fontSize = 14.sp,
+                                                text = item.playMatchesAmount.toString()
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                    }
+                                    if (item.totalMatchesAmount > 0) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .background(
+                                                    PocketScoreboardTheme.colors.lightGrey8,
+                                                    shape = RoundedCornerShape(4.dp)
+                                                ),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                fontSize = 14.sp,
+                                                text = item.totalMatchesAmount.toString()
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (state.shouldShowLoader) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    PSLoader()
+                }
+            }
+            PullRefreshIndicator(
+                state.isRefreshing,
+                pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+            if (state.showNothingFindInfo) {
+                Text(
+                    text = stringResource(resource = MR.strings.nothing_found),
+                    style = PocketScoreboardTheme.typography.dialogTextStyle,
+                    modifier = Modifier.align(BiasAlignment(0f, -0.2f))
+                )
+                Text(
+                    text = stringResource(resource = MR.strings.nothing_founded_more_info),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 12.dp),
+                    style = PocketScoreboardTheme.typography.defaultTextStyle,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LazyListState.isScrollingUp(): Boolean {
+    var previousIndex by remember(this) { mutableStateOf(firstVisibleItemIndex) }
+    var previousScrollOffset by remember(this) { mutableStateOf(firstVisibleItemScrollOffset) }
+    return remember(this) {
+        derivedStateOf {
+            if (previousIndex != firstVisibleItemIndex) {
+                previousIndex > firstVisibleItemIndex
+            } else {
+                previousScrollOffset >= firstVisibleItemScrollOffset
+            }.also {
+                previousIndex = firstVisibleItemIndex
+                previousScrollOffset = firstVisibleItemScrollOffset
+            }
+        }
+    }.value
+}
